@@ -144,7 +144,8 @@ function show() {
   }
   content.style.display = "";
   nodata.style.display = "none";
-  const inv = (DATA.invoices || []).length ? ` · invoice ${DATA.invoices.join(", ")}` : "";
+  const invList = (DATA.invoices || []).filter(i => !DATA.source.includes(i));
+  const inv = invList.length ? ` · invoice ${invList.join(", ")}` : "";
   document.getElementById("meta").textContent =
     `${DATA.source}${inv} · period ${perLabel(DATA) || "n/a"} · generated ${DATA.generated_at} · ${DATA.currency}`;
   document.getElementById("tCost").textContent = money(DATA.totals.cost);
