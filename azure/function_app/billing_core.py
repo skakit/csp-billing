@@ -208,7 +208,10 @@ def process_pending():
 
 def download_export(token, resource_location):
     auth = {"Authorization": f"Bearer {token}"}
-    _, _, manifest = http_json(resource_location, "GET", None, auth)
+    if isinstance(resource_location, dict):
+        manifest = resource_location  # Graph sometimes embeds the manifest inline
+    else:
+        _, _, manifest = http_json(resource_location, "GET", None, auth)
     root = manifest.get("rootDirectory", "").rstrip("/")
     sas = (manifest.get("sasToken") or "").lstrip("?")
     rows = []
