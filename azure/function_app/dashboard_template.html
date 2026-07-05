@@ -13,7 +13,15 @@
   * { box-sizing: border-box; margin: 0; }
   body { background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; padding: 24px; }
   h1 { font-size: 20px; font-weight: 600; }
-  .sub { color: var(--muted); font-size: 12px; margin: 4px 0 20px; }
+  .sub { color: var(--muted); font-size: 12px; margin: 4px 0 16px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tab { background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 8px; padding: 8px 18px; font-size: 13px; cursor: pointer; text-align: left; }
+  .tab .t1 { font-weight: 600; color: var(--text); display: block; }
+  .tab .t2 { font-size: 11px; }
+  .tab.active { border-color: var(--accent); background: #1c2b4a; }
+  .tab.active .t1 { color: var(--accent); }
+  .tab.empty { opacity: .5; cursor: default; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 22px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
   .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
@@ -39,13 +47,17 @@
   .margin-pos { color: var(--green); }
   .badge { background: var(--panel2); border: 1px solid var(--border); border-radius: 20px;
     padding: 2px 10px; font-size: 12px; color: var(--muted); }
+  .ctype { border-radius: 4px; padding: 1px 7px; font-size: 11px; background: var(--panel2);
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
   tr.detail td { background: #131a2a; padding: 0 14px 14px; }
   .detail-table { margin-top: 10px; }
   .detail-table th { cursor: default; font-size: 11px; }
-  .detail-table td { font-size: 13px; padding: 7px 14px; }
+  .detail-table td { font-size: 13px; padding: 7px 12px; }
   tfoot td { background: var(--panel2); font-weight: 600; border-bottom: none; }
   .arrow { display: inline-block; width: 16px; color: var(--muted); transition: transform .15s; }
   tr.open .arrow { transform: rotate(90deg); }
+  .nodata { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 40px; text-align: center; color: var(--muted); }
   @media print { body { background: #fff; color: #000; } .card, table { border-color: #ccc; } }
 </style>
 </head>
@@ -53,6 +65,12 @@
 <h1>CSP Billing Control Panel</h1>
 <div class="sub" id="meta"></div>
 
+<div class="tabs">
+  <button class="tab" id="tab-billed"></button>
+  <button class="tab" id="tab-unbilled"></button>
+</div>
+
+<div id="content">
 <div class="cards">
   <div class="card cost"><div class="label">Microsoft Cost</div><div class="value" id="tCost"></div></div>
   <div class="card charge"><div class="label">Charge to Customers</div><div class="value" id="tCharge"></div></div>
@@ -62,7 +80,7 @@
 
 <div class="toolbar">
   <input type="search" id="q" placeholder="Search customer or domain...">
-  <span class="hint">Click a row to see product breakdown · click column headers to sort</span>
+  <span class="hint">Click a row to see what each customer is charged for · click column headers to sort</span>
 </div>
 
 <table id="tbl">
@@ -77,21 +95,64 @@
   <tbody id="rows"></tbody>
   <tfoot><tr id="foot"></tr></tfoot>
 </table>
+</div>
+<div class="nodata" id="nodata" style="display:none"></div>
 
 <script>
-const DATA = __DATA__;
-let sortKey = "cost_total", sortDir = -1, openId = null;
+const ALL = __DATA__;   // { billed: {...}|null, unbilled: {...}|null }
+let setKey = ALL.billed ? "billed" : "unbilled";
+let DATA = null, sortKey = "cost_total", sortDir = -1, openId = null;
 
-const cur = DATA.currency || "";
 const fmt = n => n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-const money = n => fmt(n) + " " + cur;
+const money = n => fmt(n) + " " + (DATA.currency || "");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, m =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+const perLabel = d => (d.period && d.period.start) ?
+  `${d.period.start} → ${d.period.end}` : "";
 
-document.getElementById("meta").textContent =
-  `${DATA.source} · generated ${DATA.generated_at} · currency ${cur}`;
-document.getElementById("tCost").textContent = money(DATA.totals.cost);
-document.getElementById("tCharge").textContent = money(DATA.totals.charge);
-document.getElementById("tMargin").textContent = money(DATA.totals.margin);
-document.getElementById("tCust").textContent = DATA.totals.customers;
+function tabLabel(key) {
+  const d = ALL[key];
+  if (key === "billed") {
+    if (!d) return `<span class="t1">Last invoice (billed)</span><span class="t2">no data yet — run refresh?invoice=G...</span>`;
+    const inv = (d.invoices || []).join(", ");
+    return `<span class="t1">Invoice ${esc(inv) || "(billed)"}</span><span class="t2">${perLabel(d)} · final amounts</span>`;
+  }
+  if (!d) return `<span class="t1">Current period (estimate)</span><span class="t2">no data yet — run refresh</span>`;
+  return `<span class="t1">Current charges (estimate)</span><span class="t2">${perLabel(d)} · unbilled, updates daily</span>`;
+}
+
+function drawTabs() {
+  for (const key of ["billed", "unbilled"]) {
+    const el = document.getElementById("tab-" + key);
+    el.innerHTML = tabLabel(key);
+    el.className = "tab" + (key === setKey ? " active" : "") + (ALL[key] ? "" : " empty");
+    el.onclick = () => { if (ALL[key]) { setKey = key; openId = null; show(); } };
+  }
+}
+
+function show() {
+  drawTabs();
+  DATA = ALL[setKey];
+  const content = document.getElementById("content");
+  const nodata = document.getElementById("nodata");
+  if (!DATA) {
+    content.style.display = "none";
+    nodata.style.display = "";
+    nodata.textContent = "No data in this view yet.";
+    document.getElementById("meta").textContent = "";
+    return;
+  }
+  content.style.display = "";
+  nodata.style.display = "none";
+  const inv = (DATA.invoices || []).length ? ` · invoice ${DATA.invoices.join(", ")}` : "";
+  document.getElementById("meta").textContent =
+    `${DATA.source}${inv} · period ${perLabel(DATA) || "n/a"} · generated ${DATA.generated_at} · ${DATA.currency}`;
+  document.getElementById("tCost").textContent = money(DATA.totals.cost);
+  document.getElementById("tCharge").textContent = money(DATA.totals.charge);
+  document.getElementById("tMargin").textContent = money(DATA.totals.margin);
+  document.getElementById("tCust").textContent = DATA.totals.customers;
+  render();
+}
 
 function render() {
   const q = document.getElementById("q").value.trim().toLowerCase();
@@ -127,27 +188,36 @@ function render() {
     <td class="num margin-pos">${money(sm)}</td>`;
 }
 
+const CTYPE = { new: "new purchase", renew: "renewal", usage: "consumption",
+  addquantity: "seats added", removequantity: "seats removed", cycle: "recurring fee",
+  prorate: "prorated", cancelimmediate: "cancellation credit", convert: "conversion" };
+
 function detailRow(c) {
   const tr = document.createElement("tr");
   tr.className = "detail";
-  const rows = c.products.map(p => `
-    <tr><td style="text-align:left">${esc(p.product)}</td>
-        <td style="text-align:left">${esc(p.sku || "")}</td>
-        <td style="text-align:left">${esc(p.charge_type || "")}</td>
+  const rows = c.products.map(p => {
+    const t = (p.charge_type || "").toLowerCase().replace(/\s/g, "");
+    const tl = CTYPE[t] || p.charge_type || "";
+    const per = (p.start || p.end) ? `${p.start || "?"} → ${p.end || "?"}` : "";
+    return `
+    <tr><td style="text-align:left"><strong>${esc(p.product)}</strong>
+          <div class="domain">${esc(p.subscription || p.sku || "")}</div></td>
+        <td style="text-align:left"><span class="ctype">${esc(tl)}</span></td>
+        <td style="text-align:left" class="domain">${esc(per)}</td>
         <td class="num">${fmt(p.quantity)}</td>
         <td class="num">${money(p.cost)}</td>
-        <td class="num">${money(p.charge)}</td></tr>`).join("");
+        <td class="num">${money(p.charge)}</td></tr>`;
+  }).join("");
   tr.innerHTML = `<td colspan="6">
     <table class="detail-table">
-      <thead><tr><th style="text-align:left">Product</th><th style="text-align:left">SKU</th>
-        <th style="text-align:left">Type</th><th>Qty</th><th>Cost</th><th>Charge</th></tr></thead>
+      <thead><tr><th style="text-align:left">Product / subscription</th>
+        <th style="text-align:left">Charge type</th>
+        <th style="text-align:left">Period</th><th>Qty</th>
+        <th>Cost</th><th>Charge to customer</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></td>`;
   return tr;
 }
-
-function esc(s) { return String(s).replace(/[&<>"']/g, m =>
-  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
 
 document.getElementById("q").oninput = render;
 document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
@@ -155,7 +225,7 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
   if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = k === "name" ? 1 : -1; }
   render();
 });
-render();
+show();
 </script>
 </body>
 </html>

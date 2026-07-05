@@ -32,9 +32,14 @@ CONTAINER = "billing"
 STATE_BLOB = "state.json"          # pending export operation
 STATUS_BLOB = "status.json"        # last run status (for /api/status)
 DASHBOARD_BLOB = "dashboard.html"
-DATA_BLOB = "billing_data.json"
+DATA_BLOB = "billing_data.json"    # legacy single-dataset blob (kept for /api/data.json)
 CSV_BLOB = "customer_charges.csv"
 PRICING_BLOB = "pricing.json"      # editable copy in blob storage
+
+# Dual datasets: last billed invoice + current unbilled estimate
+DATA_BLOBS = {"billed": "data_billed.json", "unbilled": "data_unbilled.json"}
+CSV_BLOBS = {"billed": "customer_charges_billed.csv",
+             "unbilled": "customer_charges_unbilled.csv"}
 
 log = logging.getLogger("billing_core")
 
@@ -158,18 +163,20 @@ def start_export(invoice_id=None, unbilled_period=None, currency=None):
         url = f"{GRAPH}/reports/partners/billing/reconciliation/billed/export"
         body = {"invoiceId": invoice_id, "attributeSet": "full"}
         label = f"Invoice {invoice_id}"
+        slot = "billed"
     else:
         cur = currency or cfg["default_currency"]
         url = f"{GRAPH}/reports/partners/billing/reconciliation/unbilled/export"
         body = {"billingPeriod": unbilled_period or "current",
                 "currencyCode": cur, "attributeSet": "full"}
         label = f"Unbilled ({unbilled_period or 'current'} period, {cur})"
+        slot = "unbilled"
     status, headers, _ = http_json(url, "POST", body, auth)
     location = headers.get("Location") or headers.get("location")
     if status != 202 or not location:
         raise RuntimeError(f"Export request not accepted (HTTP {status})")
     write_blob(STATE_BLOB, json.dumps({
-        "operation_url": location, "label": label,
+        "operation_url": location, "label": label, "slot": slot,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }), "application/json")
     set_status("running", f"Export started: {label}. Data will appear in ~5-15 minutes.")
@@ -202,7 +209,7 @@ def process_pending():
     if not rows:
         set_status("failed", f"{state['label']}: export succeeded but contained no line items")
         return "empty"
-    build_outputs(rows, state["label"])
+    build_outputs(rows, state["label"], state.get("slot", "unbilled"))
     return "done"
 
 
@@ -295,6 +302,8 @@ def markup_for(customer, pricing):
 def aggregate(rows, pricing, source_label):
     customers = {}
     currency = ""
+    period_start, period_end = "", ""
+    invoices = set()
     for raw in rows:
         row = {str(k).lower().replace(" ", ""): v for k, v in raw.items()}
         cid = str(get_field(row, "customer_id", "unknown"))
@@ -314,15 +323,33 @@ def aggregate(rows, pricing, source_label):
         c["line_count"] += 1
         currency = get_field(row, "currency", currency) or currency
 
-        pkey = f'{get_field(row, "product", "Unknown product")} | {get_field(row, "sku")}'
+        start = str(get_field(row, "start", ""))[:10]
+        end = str(get_field(row, "end", ""))[:10]
+        if start:
+            period_start = min(period_start, start) if period_start else start
+        if end:
+            period_end = max(period_end, end) if period_end else end
+        inv = get_field(row, "invoice")
+        if inv:
+            invoices.add(str(inv))
+
+        sub = get_field(row, "subscription")
+        ctype = get_field(row, "charge_type")
+        pkey = f'{get_field(row, "product", "Unknown product")} | {get_field(row, "sku")} | {sub} | {ctype}'
         p = c["products"].setdefault(pkey, {
             "product": get_field(row, "product", "Unknown product"),
             "sku": get_field(row, "sku"),
-            "charge_type": get_field(row, "charge_type"),
+            "subscription": sub,
+            "charge_type": ctype,
+            "start": start, "end": end,
             "quantity": 0.0, "cost": 0.0,
         })
         p["quantity"] += to_float(get_field(row, "quantity"))
         p["cost"] += total
+        if start and (not p["start"] or start < p["start"]):
+            p["start"] = start
+        if end and (not p["end"] or end > p["end"]):
+            p["end"] = end
 
     result = []
     for c in customers.values():
@@ -350,6 +377,8 @@ def aggregate(rows, pricing, source_label):
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "source": source_label,
+        "period": {"start": period_start, "end": period_end},
+        "invoices": sorted(invoices),
         "currency": currency or "USD",
         "totals": {
             "cost": round(sum(c["cost_total"] for c in result), 2),
@@ -363,12 +392,26 @@ def aggregate(rows, pricing, source_label):
 
 # ---------------------------------------------------------------- outputs
 
-def build_outputs(rows, label):
+def build_outputs(rows, label, slot="unbilled"):
     pricing = get_pricing()
     data = aggregate(rows, pricing, label)
 
-    write_blob(DATA_BLOB, json.dumps(data, indent=2), "application/json")
+    write_blob(DATA_BLOBS[slot], json.dumps(data, indent=2), "application/json")
+    write_blob(DATA_BLOB, json.dumps(data, indent=2), "application/json")  # legacy
 
+    csv_text = make_csv(data)
+    write_blob(CSV_BLOBS[slot], csv_text, "text/csv; charset=utf-8")
+    write_blob(CSV_BLOB, csv_text, "text/csv; charset=utf-8")  # legacy = most recent run
+
+    rebuild_dashboard()
+
+    t = data["totals"]
+    set_status("done", f"{label} [{slot}]: {t['customers']} customers | cost {t['cost']:,.2f} "
+                       f"| charge {t['charge']:,.2f} | margin {t['margin']:,.2f} {data['currency']}")
+    return data
+
+
+def make_csv(data):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Customer", "Domain", "Currency", "Microsoft Cost",
@@ -376,16 +419,18 @@ def build_outputs(rows, label):
     for c in data["customers"]:
         w.writerow([c["name"], c["domain"], data["currency"], c["cost_total"],
                     c["markup_percent"], c["charge_total"], c["margin"]])
-    write_blob(CSV_BLOB, "﻿" + buf.getvalue(), "text/csv; charset=utf-8")
+    return "﻿" + buf.getvalue()
 
+
+def rebuild_dashboard():
+    """Render the dashboard with both datasets (billed invoice + unbilled estimate)."""
+    combined = {}
+    for slot, blob in DATA_BLOBS.items():
+        text = read_blob_text(blob)
+        combined[slot] = json.loads(text) if text else None
     template = (PKG / "dashboard_template.html").read_text(encoding="utf-8")
-    write_blob(DASHBOARD_BLOB, template.replace("__DATA__", json.dumps(data)),
+    write_blob(DASHBOARD_BLOB, template.replace("__DATA__", json.dumps(combined)),
                "text/html; charset=utf-8")
-
-    t = data["totals"]
-    set_status("done", f"{label}: {t['customers']} customers | cost {t['cost']:,.2f} "
-                       f"| charge {t['charge']:,.2f} | margin {t['margin']:,.2f} {data['currency']}")
-    return data
 
 
 # ---------------------------------------------------------------- sample data

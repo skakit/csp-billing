@@ -57,17 +57,22 @@ def dashboard(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="charges.csv", methods=["GET"])
 def charges_csv(req: func.HttpRequest) -> func.HttpResponse:
-    text = core.read_blob_text(core.CSV_BLOB)
+    which = req.params.get("set")  # billed | unbilled | (default: latest run)
+    blob = core.CSV_BLOBS.get(which, core.CSV_BLOB)
+    text = core.read_blob_text(blob)
     if not text:
         return func.HttpResponse("No data yet. Run /api/refresh first.", status_code=404)
+    fname = f"customer_charges_{which}.csv" if which in core.CSV_BLOBS else "customer_charges.csv"
     return func.HttpResponse(text, mimetype="text/csv",
                              headers={"Content-Disposition":
-                                      "attachment; filename=customer_charges.csv"})
+                                      f"attachment; filename={fname}"})
 
 
 @app.route(route="data.json", methods=["GET"])
 def data_json(req: func.HttpRequest) -> func.HttpResponse:
-    text = core.read_blob_text(core.DATA_BLOB)
+    which = req.params.get("set")  # billed | unbilled | (default: latest run)
+    blob = core.DATA_BLOBS.get(which, core.DATA_BLOB)
+    text = core.read_blob_text(blob)
     if not text:
         return func.HttpResponse('{"error": "No data yet"}', status_code=404,
                                  mimetype="application/json")
