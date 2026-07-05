@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSP Billing Control Panel</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #1a2132; --panel2: #212a40; --border: #2c3752;
+    --text: #e8ecf5; --muted: #8b96ad; --accent: #4f8ff7; --green: #3ecf8e;
+    --amber: #f5b944; --red: #f06a6a;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; padding: 24px; }
+  h1 { font-size: 20px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 12px; margin: 4px 0 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .card .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  .card.margin .value { color: var(--green); }
+  .card.cost .value { color: var(--amber); }
+  .card.charge .value { color: var(--accent); }
+  .toolbar { display: flex; gap: 12px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
+  input[type=search] { background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 8px 12px; width: 280px; font-size: 14px; }
+  input[type=search]:focus { outline: none; border-color: var(--accent); }
+  .toolbar .hint { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 10px; overflow: hidden; }
+  th, td { padding: 10px 14px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: var(--panel2); color: var(--muted); font-size: 12px; text-transform: uppercase;
+    letter-spacing: .04em; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--text); }
+  tr.cust { cursor: pointer; }
+  tr.cust:hover td { background: var(--panel2); }
+  .domain { color: var(--muted); font-size: 12px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .margin-pos { color: var(--green); }
+  .badge { background: var(--panel2); border: 1px solid var(--border); border-radius: 20px;
+    padding: 2px 10px; font-size: 12px; color: var(--muted); }
+  tr.detail td { background: #131a2a; padding: 0 14px 14px; }
+  .detail-table { margin-top: 10px; }
+  .detail-table th { cursor: default; font-size: 11px; }
+  .detail-table td { font-size: 13px; padding: 7px 14px; }
+  tfoot td { background: var(--panel2); font-weight: 600; border-bottom: none; }
+  .arrow { display: inline-block; width: 16px; color: var(--muted); transition: transform .15s; }
+  tr.open .arrow { transform: rotate(90deg); }
+  @media print { body { background: #fff; color: #000; } .card, table { border-color: #ccc; } }
+</style>
+</head>
+<body>
+<h1>CSP Billing Control Panel</h1>
+<div class="sub" id="meta"></div>
+
+<div class="cards">
+  <div class="card cost"><div class="label">Microsoft Cost</div><div class="value" id="tCost"></div></div>
+  <div class="card charge"><div class="label">Charge to Customers</div><div class="value" id="tCharge"></div></div>
+  <div class="card margin"><div class="label">Margin</div><div class="value" id="tMargin"></div></div>
+  <div class="card"><div class="label">Customers</div><div class="value" id="tCust"></div></div>
+</div>
+
+<div class="toolbar">
+  <input type="search" id="q" placeholder="Search customer or domain...">
+  <span class="hint">Click a row to see product breakdown · click column headers to sort</span>
+</div>
+
+<table id="tbl">
+  <thead><tr>
+    <th data-k="name">Customer</th>
+    <th data-k="line_count">Lines</th>
+    <th data-k="cost_total">Microsoft Cost</th>
+    <th data-k="markup_percent">Markup %</th>
+    <th data-k="charge_total">Charge</th>
+    <th data-k="margin">Margin</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+  <tfoot><tr id="foot"></tr></tfoot>
+</table>
+
+<script>
+const DATA = __DATA__;
+let sortKey = "cost_total", sortDir = -1, openId = null;
+
+const cur = DATA.currency || "";
+const fmt = n => n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const money = n => fmt(n) + " " + cur;
+
+document.getElementById("meta").textContent =
+  `${DATA.source} · generated ${DATA.generated_at} · currency ${cur}`;
+document.getElementById("tCost").textContent = money(DATA.totals.cost);
+document.getElementById("tCharge").textContent = money(DATA.totals.charge);
+document.getElementById("tMargin").textContent = money(DATA.totals.margin);
+document.getElementById("tCust").textContent = DATA.totals.customers;
+
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  let list = DATA.customers.filter(c =>
+    !q || c.name.toLowerCase().includes(q) || (c.domain || "").toLowerCase().includes(q));
+  list.sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    return (typeof x === "string" ? x.localeCompare(y) : x - y) * sortDir;
+  });
+  const tb = document.getElementById("rows");
+  tb.innerHTML = "";
+  let sc = 0, sch = 0, sm = 0;
+  for (const c of list) {
+    sc += c.cost_total; sch += c.charge_total; sm += c.margin;
+    const tr = document.createElement("tr");
+    tr.className = "cust" + (openId === c.id ? " open" : "");
+    tr.innerHTML = `
+      <td><span class="arrow">&#9656;</span> <strong>${esc(c.name)}</strong>
+          <div class="domain">${esc(c.domain || "")}</div></td>
+      <td class="num">${c.line_count}</td>
+      <td class="num">${money(c.cost_total)}</td>
+      <td class="num"><span class="badge">${c.markup_percent}%</span></td>
+      <td class="num">${money(c.charge_total)}</td>
+      <td class="num margin-pos">${money(c.margin)}</td>`;
+    tr.onclick = () => { openId = openId === c.id ? null : c.id; render(); };
+    tb.appendChild(tr);
+    if (openId === c.id) tb.appendChild(detailRow(c));
+  }
+  document.getElementById("foot").innerHTML = `
+    <td>Total (${list.length} customers)</td><td></td>
+    <td class="num">${money(sc)}</td><td></td>
+    <td class="num">${money(sch)}</td>
+    <td class="num margin-pos">${money(sm)}</td>`;
+}
+
+function detailRow(c) {
+  const tr = document.createElement("tr");
+  tr.className = "detail";
+  const rows = c.products.map(p => `
+    <tr><td style="text-align:left">${esc(p.product)}</td>
+        <td style="text-align:left">${esc(p.sku || "")}</td>
+        <td style="text-align:left">${esc(p.charge_type || "")}</td>
+        <td class="num">${fmt(p.quantity)}</td>
+        <td class="num">${money(p.cost)}</td>
+        <td class="num">${money(p.charge)}</td></tr>`).join("");
+  tr.innerHTML = `<td colspan="6">
+    <table class="detail-table">
+      <thead><tr><th style="text-align:left">Product</th><th style="text-align:left">SKU</th>
+        <th style="text-align:left">Type</th><th>Qty</th><th>Cost</th><th>Charge</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></td>`;
+  return tr;
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, m =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
+
+document.getElementById("q").oninput = render;
+document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
+  const k = th.dataset.k;
+  if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = k === "name" ? 1 : -1; }
+  render();
+});
+render();
+</script>
+</body>
+</html>

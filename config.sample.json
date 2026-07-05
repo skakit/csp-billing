@@ -1,0 +1,6 @@
+{
+  "tenant_id": "YOUR-PARTNER-TENANT-ID",
+  "client_id": "YOUR-APP-CLIENT-ID",
+  "client_secret": "YOUR-CLIENT-SECRET",
+  "default_currency": "USD"
+}

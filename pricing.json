@@ -1,0 +1,9 @@
+{
+  "_comment": "Per-customer markup on Microsoft cost. Match by customer name, domain, or customer ID (case-insensitive). Customers not listed get default_markup_percent.",
+  "default_markup_percent": 15,
+  "customers": {
+    "contoso.onmicrosoft.com": { "markup_percent": 20 },
+    "Fabrikam Ltd": { "markup_percent": 12 },
+    "0f8b7fa4-example-customer-id": { "markup_percent": 18 }
+  }
+}

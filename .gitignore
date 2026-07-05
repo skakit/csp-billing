@@ -1,0 +1,19 @@
+# Secrets - never commit
+config.json
+
+# Generated outputs
+dashboard.html
+billing_data.json
+customer_charges.csv
+azure/app.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local Azure Functions settings
+local.settings.json
+
+# OS
+.DS_Store
